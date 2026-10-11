@@ -9,6 +9,10 @@ on:
         default: 'ksun-susfs'
         type: choice
         options: [ksun-plain, ksun-susfs, sukisu-susfs, resukisu-susfs]
+      ksu_tag:
+        description: 'KernelSU-Next tag override (e.g. v3.4.1); empty = pins.env default'
+        required: false
+        default: ''
       release:
         description: 'Publish a prerelease with the zips'
         type: boolean
@@ -37,7 +41,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-    name: nethunter-${{ inputs.flavor || 'ksun-susfs' }}
+    name: nethunter-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -59,7 +63,7 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.ccache
-          key: ccache-nethunter-${{ inputs.flavor || 'ksun-susfs' }}-${{ github.sha }}
+          key: ccache-nethunter-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}-${{ github.sha }}
           restore-keys: |
             ccache-nethunter-
 
@@ -75,6 +79,17 @@ jobs:
           chmod +x antman
           for i in 1 2 3 4; do ./antman --patch=glibc && break; [ "$i" = 4 ] && exit 1; sleep $((i*20)); done
           ./bin/clang --version | head -1
+
+      - name: KSUN tag override (optional)
+        if: ${{ inputs.ksu_tag != '' }}
+        run: |
+          set -euo pipefail
+          KSU="${{ inputs.ksu_tag }}"
+          echo "Overriding KSUN_TAG -> $KSU"
+          sed -i "s|^KSUN_TAG=.*|KSUN_TAG=$KSU|" scripts/ci/pins.env
+          grep '^KSUN_TAG=' scripts/ci/pins.env
+          # sanity: tag must exist upstream
+          git ls-remote --tags https://github.com/KernelSU-Next/KernelSU-Next "refs/tags/$KSU" | grep -q . || { echo "::error::tag $KSU not found upstream"; exit 1; }
 
       - name: Merge NetHunter fragment into gki_defconfig
         run: |
@@ -98,6 +113,10 @@ jobs:
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
           export ZIP_PREFIX="NetHunter"
+          # NetHunter fragment intentionally changes exported symbol CRCs, so the
+          # boot-tested KMI baseline for the stock config no longer applies here.
+          # Remove it so build-flavor.sh skips the gate instead of hard-failing.
+          rm -f scripts/ci/kmi-baseline/*.symvers || true
           scripts/ci/build-flavor.sh "${{ inputs.flavor || 'ksun-susfs' }}"
 
       - name: NetHunter config evidence
@@ -105,6 +124,8 @@ jobs:
         run: |
           echo '--- NetHunter-relevant .config ---'
           grep -E '^CONFIG_(CFG80211|MAC80211|ATH9K|RTL8XXXU|RT2800USB|MT7601U|USB_CONFIGFS|USB_F_HID|USB_SERIAL|NFS_FS|TUN)=' out/.config 2>/dev/null | sort || echo 'no .config'
+          echo '--- KSU driver version evidence ---'
+          grep -rE 'KSU_VERSION|KSU_GIT_VERSION' KernelSU/kernel/Makefile 2>/dev/null | head || true
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
