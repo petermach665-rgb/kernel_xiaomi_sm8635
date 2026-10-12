@@ -1,16 +1,17 @@
 name: NetHunter peridot (SM8635) - KSUN + SUSFS + NetHunter (+DroidSpaces/LXC)
 
-# KMI gate: compares every exported symbol CRC of the freshly built Image against
-# a stored baseline. The baseline MUST be produced by the SAME recipe as the build
-# it guards: same tree, same flavor, same NetHunter fragment, same toolchain.
+# Manual dispatch only. A push trigger was firing on every commit and, because
+# workflow_dispatch inputs are EMPTY on push events, build-flavor.sh received an
+# empty flavor and exited 2 (its usage guard). It also ran the KMI gate against
+# baselines that did not match the committed tree yet. Both are avoided by
+# keeping this workflow dispatch-only until the baselines are settled.
 #
-# Two false starts, both instructive:
-#   * baseline borrowed from a DIFFERENT kernel tree -> ~2649 bogus changes
-#   * baseline built WITHOUT the NetHunter fragment  -> fragment's own config
-#     (WLAN_VENDOR_*, CFG80211/MAC80211, USB gadget) shows up as drift
-#
-# So mode=baseline applies the fragment too, builds the selected flavor with the
-# gate off, and uploads its Module.symvers. Commit that as
+# KMI gate: the stored baseline MUST be produced by the SAME recipe as the build
+# it guards - same tree, same flavor, same NetHunter fragment, same toolchain.
+#   * baseline borrowed from a DIFFERENT kernel tree  -> ~2649 bogus changes
+#   * baseline built WITHOUT the NetHunter fragment   -> fragment symbols flagged
+# So mode=baseline applies the fragment, builds the selected flavor with the gate
+# off, and uploads its Module.symvers. Commit that as
 # scripts/ci/kmi-baseline/<flavor>.symvers.
 
 on:
@@ -42,13 +43,10 @@ on:
         description: 'Publish a prerelease with the zips'
         type: boolean
         default: false
-  push:
-    branches: [ nethunter-peridot ]
-    paths-ignore: [ '**/*.md', 'docs/**', 'assets/**' ]
 
 concurrency:
-  group: nethunter-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  group: nethunter-${{ github.ref }}-${{ inputs.mode }}-${{ inputs.flavor }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -66,7 +64,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-    name: nethunter-${{ inputs.mode || 'build' }}-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}
+    name: nethunter-${{ inputs.mode || 'build' }}-${{ inputs.flavor }}-${{ inputs.ksu_tag || 'pin' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -88,7 +86,7 @@ jobs:
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.ccache
-          key: ccache-nethunter-${{ inputs.mode || 'build' }}-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}-${{ github.sha }}
+          key: ccache-nethunter-${{ inputs.mode || 'build' }}-${{ inputs.flavor }}-${{ inputs.ksu_tag || 'pin' }}-${{ github.sha }}
           restore-keys: |
             ccache-nethunter-
 
@@ -116,8 +114,8 @@ jobs:
           git ls-remote --tags https://github.com/KernelSU-Next/KernelSU-Next "refs/tags/$KSU" | grep -q . || { echo "::error::tag $KSU not found upstream"; exit 1; }
 
       - name: Merge NetHunter fragment into gki_defconfig
-        # Applied in BOTH modes - see the header comment. A baseline without the
-        # fragment reports the fragment's own symbols as drift.
+        # Applied in BOTH modes - a baseline without the fragment reports the
+        # fragment's own symbols as drift.
         run: |
           set -euo pipefail
           CFG=arch/arm64/configs/gki_defconfig
