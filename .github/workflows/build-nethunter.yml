@@ -88,7 +88,6 @@ jobs:
           echo "Overriding KSUN_TAG -> $KSU"
           sed -i "s|^KSUN_TAG=.*|KSUN_TAG=$KSU|" scripts/ci/pins.env
           grep '^KSUN_TAG=' scripts/ci/pins.env
-          # sanity: tag must exist upstream
           git ls-remote --tags https://github.com/KernelSU-Next/KernelSU-Next "refs/tags/$KSU" | grep -q . || { echo "::error::tag $KSU not found upstream"; exit 1; }
 
       - name: Merge NetHunter fragment into gki_defconfig
@@ -108,15 +107,14 @@ jobs:
           ZIP_VERSION: ${{ env.NET_VERSION }}
           ALLOW_DIRTY: "1"
           ALLOW_OTHER_CLANG: "1"
-          KMI_STRICT: "0"
+          KMI_STRICT: "1"
         run: |
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
           export ZIP_PREFIX="NetHunter"
-          # NetHunter fragment intentionally changes exported symbol CRCs, so the
-          # boot-tested KMI baseline for the stock config no longer applies here.
-          # Remove it so build-flavor.sh skips the gate instead of hard-failing.
-          rm -f scripts/ci/kmi-baseline/*.symvers || true
+          # KMI gate is ON. The wifi-only fragment must NOT shift any net/core
+          # export CRC; the 2026-10-11 bootloop came from exactly that (prebuilt
+          # vendor_dlkm modules refused to load). A CRC drift here is a real bug.
           scripts/ci/build-flavor.sh "${{ inputs.flavor || 'ksun-susfs' }}"
 
       - name: NetHunter config evidence
