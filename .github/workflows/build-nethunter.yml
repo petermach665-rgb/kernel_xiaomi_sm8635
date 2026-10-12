@@ -36,6 +36,7 @@ env:
   NEUTRON_SHA256: b473a420d693a4e3bc71b56ec4283c0e3738f87d6ac37fa202bb0be5e0a07521
   ANTMAN_COMMIT: 0b32c45e3ad83a953b4bc3fd2feb4ad3cc87c1e8
   ANTMAN_SHA256: deef2dcf11568403c712432ecb7678ef62c3244054ccfee8510ef94a8a8fb04d
+  KMI_BASELINE_REF: theettam-2.8
 
 jobs:
   build:
@@ -59,6 +60,17 @@ jobs:
           sudo fallocate -l 12G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=12288
           sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
           free -h && df -h /
+
+      - name: Fetch KMI baseline (boot-tested symvers from upstream)
+        run: |
+          set -euo pipefail
+          mkdir -p scripts/ci/kmi-baseline
+          URL="https://raw.githubusercontent.com/Mohithash/kernel_xiaomi_sm8635/${KMI_BASELINE_REF}/scripts/ci/kmi-baseline"
+          for f in ksun-susfs.symvers ksun-plain.symvers accepted-drift.txt; do
+            curl -fsSL -o "scripts/ci/kmi-baseline/$f" "$URL/$f" && echo "  [+] $f" || echo "  [-] $f missing (ok if not needed)"
+          done
+          ls -la scripts/ci/kmi-baseline/
+          test -s scripts/ci/kmi-baseline/ksun-susfs.symvers || { echo '::error::ksun-susfs.symvers baseline unavailable - cannot KMI-gate'; exit 1; }
 
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
@@ -112,9 +124,9 @@ jobs:
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
           export ZIP_PREFIX="NetHunter"
-          # KMI gate is ON. The wifi-only fragment must NOT shift any net/core
-          # export CRC; the 2026-10-11 bootloop came from exactly that (prebuilt
-          # vendor_dlkm modules refused to load). A CRC drift here is a real bug.
+          # KMI gate is ON and has a real baseline. Any net/core export CRC shift
+          # = prebuilt stock vendor_dlkm will refuse to load = bootloop (2026-10-11).
+          # Do NOT remove the baseline to make this pass.
           scripts/ci/build-flavor.sh "${{ inputs.flavor || 'ksun-susfs' }}"
 
       - name: NetHunter config evidence
@@ -122,8 +134,8 @@ jobs:
         run: |
           echo '--- NetHunter-relevant .config ---'
           grep -E '^CONFIG_(CFG80211|MAC80211|ATH9K|RTL8XXXU|RT2800USB|MT7601U|USB_CONFIGFS|USB_F_HID|USB_SERIAL|NFS_FS|TUN)=' out/.config 2>/dev/null | sort || echo 'no .config'
-          echo '--- KSU driver version evidence ---'
-          grep -rE 'KSU_VERSION|KSU_GIT_VERSION' KernelSU/kernel/Makefile 2>/dev/null | head || true
+          echo '--- KMI gate summary ---'
+          cat out/kmi-summary.txt 2>/dev/null || echo 'no kmi-summary'
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -135,6 +147,8 @@ jobs:
             dist/Module.symvers-*
             dist/config-*
             out/build.log
+            out/kmi-diff.txt
+            out/kmi-summary.txt
           if-no-files-found: warn
 
   release:
@@ -155,5 +169,6 @@ jobs:
           name: NetHunter peridot ${{ env.NET_VERSION }} build #${{ github.run_number }}
           body: |
             NetHunter-flavored peridot kernel (KSUN + SUSFS + NetHunter config).
-            Compile-verified. Flash with backup + fastboot recovery ready.
+            KMI-gated against the boot-tested upstream baseline.
+            Flash with backup + fastboot recovery ready.
           files: zips/*.zip
