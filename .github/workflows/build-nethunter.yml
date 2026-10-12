@@ -1,8 +1,24 @@
 name: NetHunter peridot (SM8635) - KSUN + SUSFS + NetHunter (+DroidSpaces/LXC)
 
+# WHY baseline mode exists: the KMI gate compares every exported symbol CRC of the
+# freshly built Image against a boot-tested baseline. The first attempt borrowed
+# that baseline from a DIFFERENT kernel tree (Mohithash/theettam-2.8), which reports
+# ~2649 changed symbols - i.e. it was comparing two unrelated kernels, and a
+# meaningless failure. The baseline must come from the same tree it guards.
+#
+# mode=baseline builds the `plain` flavor (no root driver, no NetHunter fragment,
+# KMI gate off) and uploads dist/Module.symvers-plain. Commit that file as
+# scripts/ci/kmi-baseline/<flavor>.symvers and the gate becomes meaningful again.
+
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: 'baseline = build plain to regenerate KMI symvers for THIS tree'
+        required: true
+        default: 'build'
+        type: choice
+        options: [build, baseline]
       flavor:
         description: 'Root flavor from scripts/ci/build-flavor.sh'
         required: true
@@ -42,13 +58,12 @@ env:
   NEUTRON_SHA256: b473a420d693a4e3bc71b56ec4283c0e3738f87d6ac37fa202bb0be5e0a07521
   ANTMAN_COMMIT: 0b32c45e3ad83a953b4bc3fd2feb4ad3cc87c1e8
   ANTMAN_SHA256: deef2dcf11568403c712432ecb7678ef62c3244054ccfee8510ef94a8a8fb04d
-  KMI_BASELINE_REF: theettam-2.8
 
 jobs:
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-    name: nethunter-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}
+    name: nethunter-${{ inputs.mode || 'build' }}-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -67,21 +82,10 @@ jobs:
           sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
           free -h && df -h /
 
-      - name: Fetch KMI baseline (boot-tested symvers from upstream)
-        run: |
-          set -euo pipefail
-          mkdir -p scripts/ci/kmi-baseline
-          URL="https://raw.githubusercontent.com/Mohithash/kernel_xiaomi_sm8635/${KMI_BASELINE_REF}/scripts/ci/kmi-baseline"
-          for f in ksun-susfs.symvers ksun-susfs-droidspaces.symvers premium.symvers ksun-plain.symvers accepted-drift.txt; do
-            curl -fsSL -o "scripts/ci/kmi-baseline/$f" "$URL/$f" && echo "  [+] $f" || echo "  [-] $f missing (ok if not needed)"
-          done
-          ls -la scripts/ci/kmi-baseline/
-          test -s scripts/ci/kmi-baseline/ksun-susfs.symvers || { echo '::error::ksun-susfs.symvers baseline unavailable - cannot KMI-gate'; exit 1; }
-
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: ~/.ccache
-          key: ccache-nethunter-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}-${{ github.sha }}
+          key: ccache-nethunter-${{ inputs.mode || 'build' }}-${{ inputs.flavor || 'ksun-susfs' }}-${{ inputs.ksu_tag || 'pin' }}-${{ github.sha }}
           restore-keys: |
             ccache-nethunter-
 
@@ -99,7 +103,7 @@ jobs:
           ./bin/clang --version | head -1
 
       - name: KSUN tag override (optional)
-        if: ${{ inputs.ksu_tag != '' }}
+        if: ${{ inputs.mode != 'baseline' && inputs.ksu_tag != '' }}
         run: |
           set -euo pipefail
           KSU="${{ inputs.ksu_tag }}"
@@ -109,6 +113,7 @@ jobs:
           git ls-remote --tags https://github.com/KernelSU-Next/KernelSU-Next "refs/tags/$KSU" | grep -q . || { echo "::error::tag $KSU not found upstream"; exit 1; }
 
       - name: Merge NetHunter fragment into gki_defconfig
+        if: ${{ inputs.mode != 'baseline' }}
         run: |
           set -euo pipefail
           CFG=arch/arm64/configs/gki_defconfig
@@ -120,7 +125,21 @@ jobs:
           } >> "$CFG"
           echo "fragment lines appended: $(grep -cE '^CONFIG_' arch/arm64/configs/nethunter.fragment)"
 
+      - name: Build (baseline = plain, no fragment, KMI off)
+        if: ${{ inputs.mode == 'baseline' }}
+        env:
+          ZIP_VERSION: ${{ env.NET_VERSION }}
+          ALLOW_DIRTY: "1"
+          ALLOW_OTHER_CLANG: "1"
+          KMI_STRICT: "0"
+        run: |
+          set -euo pipefail
+          export CLANG_DIR="$HOME/clang"
+          echo '::notice::baseline mode - building plain; this symvers becomes the KMI baseline for this tree'
+          scripts/ci/build-flavor.sh plain
+
       - name: Build flavor (scripts/ci/build-flavor.sh)
+        if: ${{ inputs.mode != 'baseline' }}
         env:
           ZIP_VERSION: ${{ env.NET_VERSION }}
           ALLOW_DIRTY: "1"
@@ -130,9 +149,7 @@ jobs:
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
           export ZIP_PREFIX="NetHunter"
-          # KMI gate is ON and has a real baseline. Any net/core export CRC shift
-          # = prebuilt stock vendor_dlkm will refuse to load = bootloop (2026-10-11).
-          # Do NOT remove the baseline to make this pass.
+          # The KMI baseline must come from THIS tree. See the header comment.
           scripts/ci/build-flavor.sh "${{ inputs.flavor || 'ksun-susfs' }}"
 
       - name: NetHunter config evidence
@@ -144,6 +161,16 @@ jobs:
           grep -E '^CONFIG_(SYSVIPC|PID_NS|USER_NS|DEVTMPFS|NF_CT_NETLINK|IP6_NF_NAT|VETH|BRIDGE|OVERLAY_FS)=' out/.config 2>/dev/null | sort || echo 'no .config'
           echo '--- KMI gate summary ---'
           cat out/kmi-summary.txt 2>/dev/null || echo 'no kmi-summary'
+
+      - name: Upload KMI baseline (baseline mode)
+        if: ${{ inputs.mode == 'baseline' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: kmi-baseline-plain
+          path: |
+            dist/Module.symvers-plain
+            dist/config-plain
+          if-no-files-found: error
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
@@ -161,7 +188,7 @@ jobs:
 
   release:
     needs: build
-    if: success() && github.event_name == 'workflow_dispatch' && inputs.release
+    if: success() && github.event_name == 'workflow_dispatch' && inputs.mode != 'baseline' && inputs.release
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -178,6 +205,6 @@ jobs:
           body: |
             NetHunter-flavored peridot kernel (KSUN + SUSFS + NetHunter config).
             ksun-susfs-droidspaces / premium flavors add Docker/LXC container support.
-            KMI-gated against the boot-tested upstream baseline.
+            KMI-gated against this tree's own boot-tested baseline.
             Flash with backup + fastboot recovery ready.
           files: zips/*.zip
