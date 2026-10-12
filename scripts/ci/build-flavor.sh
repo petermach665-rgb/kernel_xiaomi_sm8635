@@ -136,8 +136,12 @@ fetch_susfs() {
   local base ok=0
   base="$(basename "$SUSFS_REPO" .git)"
   for i in 1 2 3 4 5; do
-    if curl -fsSL -o "$OUT/susfs.tar.gz" \
-         "${SUSFS_REPO%.git}/-/archive/${SUSFS_PIN}/${base}-${SUSFS_PIN}.tar.gz"; then
+    local aurl
+    case "$SUSFS_REPO" in
+      *github.com*) aurl="${SUSFS_REPO%.git}/archive/${SUSFS_PIN}.tar.gz" ;;
+      *)            aurl="${SUSFS_REPO%.git}/-/archive/${SUSFS_PIN}/${base}-${SUSFS_PIN}.tar.gz" ;;
+    esac
+    if curl -fsSL -o "$OUT/susfs.tar.gz" "$aurl"; then
       rm -rf susfs4ksu; mkdir -p susfs4ksu
       if tar -xzf "$OUT/susfs.tar.gz" -C susfs4ksu --strip-components=1; then
         ok=1; rm -f "$OUT/susfs.tar.gz"
