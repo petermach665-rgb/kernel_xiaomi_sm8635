@@ -1,12 +1,17 @@
 name: NetHunter peridot (SM8635) - KSUN + SUSFS + NetHunter (+DroidSpaces/LXC)
 
 # KMI gate: compares every exported symbol CRC of the freshly built Image against
-# a stored baseline. The baseline MUST come from the same kernel tree AND the same
-# flavor - SUSFS/DroidSpaces patch fs/* and kernel/*, which changes export CRCs.
-#   * borrowed upstream baseline (different tree) -> ~2649 bogus changes
-#   * plain baseline used for a susfs flavor    -> also bogus
-# So: mode=baseline builds the SELECTED flavor with KMI off and uploads its
-# Module.symvers. Commit that as scripts/ci/kmi-baseline/<flavor>.symvers.
+# a stored baseline. The baseline MUST be produced by the SAME recipe as the build
+# it guards: same tree, same flavor, same NetHunter fragment, same toolchain.
+#
+# Two false starts, both instructive:
+#   * baseline borrowed from a DIFFERENT kernel tree -> ~2649 bogus changes
+#   * baseline built WITHOUT the NetHunter fragment  -> fragment's own config
+#     (WLAN_VENDOR_*, CFG80211/MAC80211, USB gadget) shows up as drift
+#
+# So mode=baseline applies the fragment too, builds the selected flavor with the
+# gate off, and uploads its Module.symvers. Commit that as
+# scripts/ci/kmi-baseline/<flavor>.symvers.
 
 on:
   workflow_dispatch:
@@ -111,7 +116,8 @@ jobs:
           git ls-remote --tags https://github.com/KernelSU-Next/KernelSU-Next "refs/tags/$KSU" | grep -q . || { echo "::error::tag $KSU not found upstream"; exit 1; }
 
       - name: Merge NetHunter fragment into gki_defconfig
-        if: ${{ inputs.mode != 'baseline' }}
+        # Applied in BOTH modes - see the header comment. A baseline without the
+        # fragment reports the fragment's own symbols as drift.
         run: |
           set -euo pipefail
           CFG=arch/arm64/configs/gki_defconfig
@@ -123,7 +129,7 @@ jobs:
           } >> "$CFG"
           echo "fragment lines appended: $(grep -cE '^CONFIG_' arch/arm64/configs/nethunter.fragment)"
 
-      - name: Build BASELINE (selected flavor, no fragment, KMI gate off)
+      - name: Build BASELINE (selected flavor, KMI gate off)
         if: ${{ inputs.mode == 'baseline' }}
         env:
           ZIP_VERSION: ${{ env.NET_VERSION }}
@@ -133,7 +139,7 @@ jobs:
         run: |
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
-          echo '::notice::baseline mode - capturing Module.symvers for this tree+flavor'
+          echo '::notice::baseline mode - capturing Module.symvers for this tree+flavor+fragment'
           scripts/ci/build-flavor.sh "${{ inputs.flavor }}"
 
       - name: Build flavor (KMI gate ON)
