@@ -129,8 +129,34 @@ fetch_driver() {
 
 fetch_susfs() {
   rm -rf susfs4ksu
-  git clone --quiet -b "$SUSFS_BRANCH" "$SUSFS_REPO" susfs4ksu
-  git -C susfs4ksu checkout --quiet "$SUSFS_PIN"
+  # GitLab's git smart-http endpoint is frequently overloaded ("unable to
+  # handle this request due to load", exit 128). The archive endpoint serves
+  # the exact pin as a tarball and has stayed reliable. Try tarball first,
+  # fall back to a retrying git clone only if it fails.
+  local base ok=0
+  base="$(basename "$SUSFS_REPO" .git)"
+  for i in 1 2 3 4 5; do
+    if curl -fsSL -o "$OUT/susfs.tar.gz" \
+         "${SUSFS_REPO%.git}/-/archive/${SUSFS_PIN}/${base}-${SUSFS_PIN}.tar.gz"; then
+      rm -rf susfs4ksu; mkdir -p susfs4ksu
+      if tar -xzf "$OUT/susfs.tar.gz" -C susfs4ksu --strip-components=1; then
+        ok=1; rm -f "$OUT/susfs.tar.gz"
+        log "  [+] susfs4ksu via archive tarball @ ${SUSFS_PIN:0:10}"; break
+      fi
+    fi
+    rm -rf susfs4ksu "$OUT/susfs.tar.gz"
+    log "  [!] susfs archive attempt $i failed; retry in $((i*15))s"; sleep $((i*15))
+  done
+  if [ "$ok" != 1 ]; then
+    log "  [*] archive endpoint failed, falling back to git clone"
+    for i in 1 2 3 4 5 6; do
+      if git clone --quiet -b "$SUSFS_BRANCH" "$SUSFS_REPO" susfs4ksu; then ok=1; break; fi
+      rm -rf susfs4ksu
+      log "  [!] susfs4ksu clone attempt $i failed (gitlab flaky); retry in $((i*15))s"; sleep $((i*15))
+    done
+  fi
+  [ "$ok" = 1 ] || die "susfs4ksu fetch failed (archive + clone) for $SUSFS_REPO@$SUSFS_PIN"
+  git -C susfs4ksu checkout --quiet "$SUSFS_PIN" 2>/dev/null || true
   local v; v="$(sed -n 's/.*SUSFS_VERSION[^"]*"\([^"]*\)".*/\1/p' susfs4ksu/kernel_patches/include/linux/susfs.h)"
   [ "$v" = "$SUSFS_EXPECT_VERSION" ] || die "expected SUSFS $SUSFS_EXPECT_VERSION, got '$v' at $SUSFS_PIN"
   log "susfs4ksu $v @ ${SUSFS_PIN:0:10}"
