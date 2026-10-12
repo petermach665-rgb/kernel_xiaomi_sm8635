@@ -1,20 +1,18 @@
 name: NetHunter peridot (SM8635) - KSUN + SUSFS + NetHunter (+DroidSpaces/LXC)
 
-# WHY baseline mode exists: the KMI gate compares every exported symbol CRC of the
-# freshly built Image against a boot-tested baseline. The first attempt borrowed
-# that baseline from a DIFFERENT kernel tree (Mohithash/theettam-2.8), which reports
-# ~2649 changed symbols - i.e. it was comparing two unrelated kernels, and a
-# meaningless failure. The baseline must come from the same tree it guards.
-#
-# mode=baseline builds the `plain` flavor (no root driver, no NetHunter fragment,
-# KMI gate off) and uploads dist/Module.symvers-plain. Commit that file as
-# scripts/ci/kmi-baseline/<flavor>.symvers and the gate becomes meaningful again.
+# KMI gate: compares every exported symbol CRC of the freshly built Image against
+# a stored baseline. The baseline MUST come from the same kernel tree AND the same
+# flavor - SUSFS/DroidSpaces patch fs/* and kernel/*, which changes export CRCs.
+#   * borrowed upstream baseline (different tree) -> ~2649 bogus changes
+#   * plain baseline used for a susfs flavor    -> also bogus
+# So: mode=baseline builds the SELECTED flavor with KMI off and uploads its
+# Module.symvers. Commit that as scripts/ci/kmi-baseline/<flavor>.symvers.
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'baseline = build plain to regenerate KMI symvers for THIS tree'
+        description: 'baseline = build selected flavor to capture its KMI symvers'
         required: true
         default: 'build'
         type: choice
@@ -22,7 +20,7 @@ on:
       flavor:
         description: 'Root flavor from scripts/ci/build-flavor.sh'
         required: true
-        default: 'ksun-susfs'
+        default: 'ksun-susfs-droidspaces'
         type: choice
         options:
           - ksun-plain
@@ -103,7 +101,7 @@ jobs:
           ./bin/clang --version | head -1
 
       - name: KSUN tag override (optional)
-        if: ${{ inputs.mode != 'baseline' && inputs.ksu_tag != '' }}
+        if: ${{ inputs.ksu_tag != '' }}
         run: |
           set -euo pipefail
           KSU="${{ inputs.ksu_tag }}"
@@ -125,7 +123,7 @@ jobs:
           } >> "$CFG"
           echo "fragment lines appended: $(grep -cE '^CONFIG_' arch/arm64/configs/nethunter.fragment)"
 
-      - name: Build (baseline = plain, no fragment, KMI off)
+      - name: Build BASELINE (selected flavor, no fragment, KMI gate off)
         if: ${{ inputs.mode == 'baseline' }}
         env:
           ZIP_VERSION: ${{ env.NET_VERSION }}
@@ -135,10 +133,10 @@ jobs:
         run: |
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
-          echo '::notice::baseline mode - building plain; this symvers becomes the KMI baseline for this tree'
-          scripts/ci/build-flavor.sh plain
+          echo '::notice::baseline mode - capturing Module.symvers for this tree+flavor'
+          scripts/ci/build-flavor.sh "${{ inputs.flavor }}"
 
-      - name: Build flavor (scripts/ci/build-flavor.sh)
+      - name: Build flavor (KMI gate ON)
         if: ${{ inputs.mode != 'baseline' }}
         env:
           ZIP_VERSION: ${{ env.NET_VERSION }}
@@ -149,27 +147,26 @@ jobs:
           set -euo pipefail
           export CLANG_DIR="$HOME/clang"
           export ZIP_PREFIX="NetHunter"
-          # The KMI baseline must come from THIS tree. See the header comment.
-          scripts/ci/build-flavor.sh "${{ inputs.flavor || 'ksun-susfs' }}"
+          scripts/ci/build-flavor.sh "${{ inputs.flavor }}"
 
-      - name: NetHunter config evidence
+      - name: Config evidence
         if: always()
         run: |
-          echo '--- NetHunter-relevant .config ---'
+          echo '--- NetHunter .config ---'
           grep -E '^CONFIG_(CFG80211|MAC80211|ATH9K|RTL8XXXU|RT2800USB|MT7601U|USB_CONFIGFS|USB_F_HID|USB_SERIAL|NFS_FS|TUN)=' out/.config 2>/dev/null | sort || echo 'no .config'
-          echo '--- DroidSpaces / namespace config ---'
-          grep -E '^CONFIG_(SYSVIPC|PID_NS|USER_NS|DEVTMPFS|NF_CT_NETLINK|IP6_NF_NAT|VETH|BRIDGE|OVERLAY_FS)=' out/.config 2>/dev/null | sort || echo 'no .config'
+          echo '--- DroidSpaces / namespace .config ---'
+          grep -E '^CONFIG_(SYSVIPC|PID_NS|USER_NS|DEVTMPFS|NF_CT_NETLINK|IP6_NF_NAT|VETH|BRIDGE|OVERLAY_FS|CGROUP_DEVICE|CGROUP_PIDS)=' out/.config 2>/dev/null | sort || echo 'no .config'
           echo '--- KMI gate summary ---'
           cat out/kmi-summary.txt 2>/dev/null || echo 'no kmi-summary'
 
-      - name: Upload KMI baseline (baseline mode)
+      - name: Upload baseline symvers
         if: ${{ inputs.mode == 'baseline' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: kmi-baseline-plain
+          name: kmi-baseline-${{ inputs.flavor }}
           path: |
-            dist/Module.symvers-plain
-            dist/config-plain
+            dist/Module.symvers-${{ inputs.flavor }}
+            dist/config-${{ inputs.flavor }}
           if-no-files-found: error
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -205,6 +202,6 @@ jobs:
           body: |
             NetHunter-flavored peridot kernel (KSUN + SUSFS + NetHunter config).
             ksun-susfs-droidspaces / premium flavors add Docker/LXC container support.
-            KMI-gated against this tree's own boot-tested baseline.
+            KMI-gated against this tree's own per-flavor baseline.
             Flash with backup + fastboot recovery ready.
           files: zips/*.zip
