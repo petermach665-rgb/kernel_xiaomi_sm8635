@@ -1,4 +1,4 @@
-name: NetHunter peridot (SM8635) - KSUN + SUSFS + NetHunter
+name: NetHunter peridot (SM8635) - KSUN + SUSFS + NetHunter (+DroidSpaces/LXC)
 
 on:
   workflow_dispatch:
@@ -8,7 +8,13 @@ on:
         required: true
         default: 'ksun-susfs'
         type: choice
-        options: [ksun-plain, ksun-susfs, sukisu-susfs, resukisu-susfs]
+        options:
+          - ksun-plain
+          - ksun-susfs
+          - ksun-susfs-droidspaces
+          - sukisu-susfs
+          - resukisu-susfs
+          - premium
       ksu_tag:
         description: 'KernelSU-Next tag override (e.g. v3.4.1); empty = pins.env default'
         required: false
@@ -66,7 +72,7 @@ jobs:
           set -euo pipefail
           mkdir -p scripts/ci/kmi-baseline
           URL="https://raw.githubusercontent.com/Mohithash/kernel_xiaomi_sm8635/${KMI_BASELINE_REF}/scripts/ci/kmi-baseline"
-          for f in ksun-susfs.symvers ksun-plain.symvers accepted-drift.txt; do
+          for f in ksun-susfs.symvers ksun-susfs-droidspaces.symvers premium.symvers ksun-plain.symvers accepted-drift.txt; do
             curl -fsSL -o "scripts/ci/kmi-baseline/$f" "$URL/$f" && echo "  [+] $f" || echo "  [-] $f missing (ok if not needed)"
           done
           ls -la scripts/ci/kmi-baseline/
@@ -134,6 +140,8 @@ jobs:
         run: |
           echo '--- NetHunter-relevant .config ---'
           grep -E '^CONFIG_(CFG80211|MAC80211|ATH9K|RTL8XXXU|RT2800USB|MT7601U|USB_CONFIGFS|USB_F_HID|USB_SERIAL|NFS_FS|TUN)=' out/.config 2>/dev/null | sort || echo 'no .config'
+          echo '--- DroidSpaces / namespace config ---'
+          grep -E '^CONFIG_(SYSVIPC|PID_NS|USER_NS|DEVTMPFS|NF_CT_NETLINK|IP6_NF_NAT|VETH|BRIDGE|OVERLAY_FS)=' out/.config 2>/dev/null | sort || echo 'no .config'
           echo '--- KMI gate summary ---'
           cat out/kmi-summary.txt 2>/dev/null || echo 'no kmi-summary'
 
@@ -169,6 +177,7 @@ jobs:
           name: NetHunter peridot ${{ env.NET_VERSION }} build #${{ github.run_number }}
           body: |
             NetHunter-flavored peridot kernel (KSUN + SUSFS + NetHunter config).
+            ksun-susfs-droidspaces / premium flavors add Docker/LXC container support.
             KMI-gated against the boot-tested upstream baseline.
             Flash with backup + fastboot recovery ready.
           files: zips/*.zip
